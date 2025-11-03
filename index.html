@@ -108,6 +108,10 @@
                 <div class="text-xs text-cyan-400 tracking-[2px] mb-1">LEVEL</div>
                 <div id="level" class="text-xl md:text-3xl font-black text-white text-shadow-cyan">1</div>
             </div>
+            <div class="bg-black/70 border-2 border-cyan-400 rounded-xl py-2 px-6 md:py-4 md:px-8 backdrop-blur-lg shadow-[0_0_20px_rgba(0,255,255,0.5)] text-center">
+                <div class="text-xs text-cyan-400 tracking-[2px] mb-1">LIVES</div>
+                <div id="lives" class="text-xl md:text-3xl font-black text-white text-shadow-cyan">3</div>
+            </div>
         </div>
 
         <div id="startMenu" class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-2xl px-4 text-center pointer-events-auto animate-fadeIn">
@@ -124,6 +128,9 @@
             <div class="mt-10 bg-black/50 border border-cyan-400 rounded-lg p-5 backdrop-blur-md max-w-sm mx-auto">
                 <div class="m-2 text-cyan-400 text-sm tracking-wider">←→ or A/D - Steer Left/Right</div>
                 <div class="m-2 text-cyan-400 text-sm tracking-wider">SPACE - Pause</div>
+            </div>
+            <div class="mt-6 text-cyan-400 text-xs tracking-widest opacity-70">
+                Created by Jonas Lund 2025
             </div>
         </div>
 
@@ -155,7 +162,7 @@
 
     <script>
         // Game Variables
-        let scene, camera, renderer, composer;
+        let scene, camera, renderer, composer, starfield;
         let snake = [];
         let food, foodGlow;
         let direction = { x: 1, y: 0, z: 0 };
@@ -163,6 +170,7 @@
         let score = 0;
         let highScore = localStorage.getItem('snake3DHighScore') || 0;
         let level = 1;
+        let lives = 3;
         let gameRunning = false;
         let isPaused = false;
         let gameSpeed = 150;
@@ -196,12 +204,14 @@
             setupPostProcessing();
             setupLighting();
             createGameBoard();
+            createStarfield();
             createSnake();
             createFood();
 
             document.addEventListener('keydown', handleKeyPress);
             window.addEventListener('resize', onWindowResize);
             document.getElementById('highScore').textContent = highScore;
+            document.getElementById('lives').textContent = lives;
 
             setTimeout(() => {
                 document.getElementById('loadingScreen').style.opacity = '0';
@@ -288,6 +298,34 @@
             scene.add(westWall);
         }
 
+        function createStarfield() {
+            const starVertices = [];
+            const starColors = [];
+            const zMin = -200, zMax = 20;
+
+            for (let i = 0; i < 1500; i++) {
+                const x = THREE.MathUtils.randFloatSpread(150);
+                const y = THREE.MathUtils.randFloatSpread(150);
+                const z = THREE.MathUtils.randFloat(zMin, zMax);
+                starVertices.push(x, y, z);
+
+                const intensity = (z - zMin) / (zMax - zMin);
+                starColors.push(intensity, intensity, intensity);
+            }
+
+            const starGeometry = new THREE.BufferGeometry();
+            starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
+            starGeometry.setAttribute('color', new THREE.Float32BufferAttribute(starColors, 3));
+            
+            const starMaterial = new THREE.PointsMaterial({
+                size: 0.15,
+                vertexColors: true,
+                fog: false
+            });
+            starfield = new THREE.Points(starGeometry, starMaterial);
+            scene.add(starfield);
+        }
+
         function createSnake() {
             // Clear previous snake from the scene and array
             snake.forEach(segment => scene.remove(segment.mesh));
@@ -370,7 +408,7 @@
             const newZ = head.position.z + direction.z;
 
             if (newX < 0 || newX >= gridSize || newZ < 0 || newZ >= gridSize || snake.slice(1).some(s => s.position.x === newX && s.position.z === newZ)) {
-                gameOver();
+                handleDeath();
                 return;
             }
 
@@ -390,6 +428,58 @@
             if (newX === food.gridPosition.x && newZ === food.gridPosition.z) {
                 eatFood();
             }
+        }
+        
+        function handleDeath() {
+            lives--;
+            document.getElementById('lives').textContent = lives;
+            isPaused = true; 
+
+            createExplosion(snake[0].mesh.position);
+            snake.forEach(segment => segment.mesh.visible = false);
+
+            if (lives <= 0) {
+                setTimeout(() => {
+                    isPaused = false;
+                    gameOver();
+                }, 2000); 
+            } else {
+                setTimeout(() => {
+                    resetAfterDeath();
+                }, 2000);
+            }
+        }
+
+        function resetAfterDeath() {
+            direction = { x: 1, y: 0, z: 0 };
+            newDirection = { x: 1, y: 0, z: 0 };
+            createSnake();
+            isPaused = false;
+        }
+
+        function createExplosion(position) {
+            const particleCount = 100;
+            const geometry = new THREE.BufferGeometry();
+            const positions = [];
+            const velocities = [];
+            for (let i = 0; i < particleCount; i++) {
+                positions.push(position.x, position.y, position.z);
+                velocities.push(
+                    (Math.random() - 0.5) * 15,
+                    (Math.random() - 0.5) * 15,
+                    (Math.random() - 0.5) * 15
+                );
+            }
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            const material = new THREE.PointsMaterial({
+                size: 0.15,
+                color: snakeHeadColor,
+                transparent: true
+            });
+            const particles = new THREE.Points(geometry, material);
+            particles.userData = { velocities, life: 1.0 };
+            scene.add(particles);
+            particleSystems.push(particles);
         }
 
         function eatFood() {
@@ -430,7 +520,7 @@
 
         function updateParticles(deltaTime) {
             particleSystems = particleSystems.filter(system => {
-                system.userData.life -= deltaTime * 2.0;
+                system.userData.life -= deltaTime * 1.5;
                 if (system.userData.life <= 0) {
                     scene.remove(system);
                     return false;
@@ -450,6 +540,15 @@
         function handleKeyPress(event) {
             if (!gameRunning && event.key !== ' ' && event.key !== 'Enter') return;
             if (isPaused && event.key.toLowerCase() !== ' ') return;
+            if (!gameRunning || isPaused) {
+                 if (event.key.toLowerCase() === ' ') {
+                    if (gameRunning) {
+                        isPaused = !isPaused;
+                        document.getElementById('pauseIndicator').style.display = isPaused ? 'block' : 'none';
+                    }
+                 }
+                 return;
+            }
 
             switch(event.key.toLowerCase()) {
                 case 'arrowleft': case 'a':
@@ -473,6 +572,8 @@
             document.getElementById('startMenu').style.display = 'none';
             gameRunning = true;
             isPaused = false;
+            lives = 3;
+            document.getElementById('lives').textContent = lives;
         }
 
         function gameOver() {
@@ -487,11 +588,13 @@
             newDirection = { x: 1, y: 0, z: 0 };
             score = 0;
             level = 1;
+            lives = 3;
             gameSpeed = 150;
             createSnake();
             createFood();
             document.getElementById('score').textContent = score;
             document.getElementById('level').textContent = level;
+            document.getElementById('lives').textContent = lives;
             gameRunning = true;
             isPaused = false;
         }
@@ -502,11 +605,42 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
             composer.setSize(window.innerWidth, window.innerHeight);
         }
+        
+        function animateStarfield(deltaTime) {
+            if (!starfield) return;
+
+            const positions = starfield.geometry.attributes.position.array;
+            const colors = starfield.geometry.attributes.color.array;
+            const speed = 15; // units per second
+            const zMin = -200, zMax = 20;
+
+            for (let i = 0; i < positions.length; i += 3) {
+                // Move star on Z axis towards the camera
+                positions[i + 2] += speed * deltaTime;
+
+                // If star has moved past the camera, reset its position to the back
+                if (positions[i + 2] > zMax) {
+                    positions[i + 2] = zMin; // Reset Z to the back
+                    // Give it a new random X and Y to prevent streaking
+                    positions[i] = THREE.MathUtils.randFloatSpread(150);
+                    positions[i + 1] = THREE.MathUtils.randFloatSpread(150);
+                }
+                
+                // Update color based on new Z position for depth effect
+                const intensity = (positions[i + 2] - zMin) / (zMax - zMin);
+                colors[i] = intensity;
+                colors[i + 1] = intensity;
+                colors[i + 2] = intensity;
+            }
+            starfield.geometry.attributes.position.needsUpdate = true;
+            starfield.geometry.attributes.color.needsUpdate = true;
+        }
+
 
         let lastFrameTime = 0;
         function animate(currentTime) {
             requestAnimationFrame(animate);
-            const deltaTime = (currentTime - lastFrameTime) * 0.001;
+            const deltaTime = (currentTime - lastFrameTime) * 0.001 || 0;
             lastFrameTime = currentTime;
 
             if (currentTime - lastUpdateTime > gameSpeed) {
@@ -522,8 +656,9 @@
                 const scale = 1 + Math.sin(currentTime * 0.005) * 0.2;
                 foodGlow.scale.set(scale, scale, scale);
             }
-
-            updateParticles(deltaTime || 0);
+            
+            animateStarfield(deltaTime);
+            updateParticles(deltaTime);
             composer.render();
         }
 
