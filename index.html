@@ -161,10 +161,11 @@
     <div id="gameCanvas" class="fixed top-0 left-0 w-full h-full z-0"></div>
 
     <script>
-        // Game Variables
+        // --- GAME VARIABLES ---
         let scene, camera, renderer, composer, starfield;
         let snake = [];
         let food, foodGlow;
+        let bonusFood, bonusFoodGlow, bonusFoodTimeout;
         let direction = { x: 1, y: 0, z: 0 };
         let newDirection = { x: 1, y: 0, z: 0 };
         let score = 0;
@@ -176,21 +177,109 @@
         let gameSpeed = 150;
         let lastUpdateTime = 0;
         let gridSize = 20;
-
-        // Materials and colors
+        let particleSystems = [];
+        
+        // --- CONSTANTS ---
         const snakeHeadColor = 0x00ff00;
         const snakeBodyColor = 0x00aa00;
         const foodColor = 0xff00ff;
+        const bonusFoodColor = 0xffd700; // Gold
+        const bonusFoodValue = 50;
+        const bonusFoodDuration = 10000; // 10 seconds
         const gridColor = 0x003366;
-        let particleSystems = [];
+        
+        // --- AUDIO ---
+        let audioContext;
+        let mainGainNode;
 
-        // Initialize Three.js
+        function initAudio() {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                mainGainNode = audioContext.createGain();
+                mainGainNode.connect(audioContext.destination);
+                mainGainNode.gain.value = 0.5;
+            }
+        }
+
+        function playSound(type) {
+            if (!audioContext) return;
+            if (audioContext.state === 'suspended') audioContext.resume();
+            
+            const now = audioContext.currentTime;
+            switch(type) {
+                case 'eat': {
+                    const osc = audioContext.createOscillator();
+                    const gain = audioContext.createGain();
+                    osc.connect(gain);
+                    gain.connect(mainGainNode);
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(880, now);
+                    gain.gain.setValueAtTime(0.3, now);
+                    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+                    osc.start(now);
+                    osc.stop(now + 0.2);
+                    break;
+                }
+                case 'bonus_eat': {
+                    [1046.50, 1318.51, 1567.98].forEach((freq, i) => {
+                        const osc = audioContext.createOscillator();
+                        const gain = audioContext.createGain();
+                        osc.connect(gain);
+                        gain.connect(mainGainNode);
+                        osc.type = 'triangle';
+                        osc.frequency.setValueAtTime(freq, now + i * 0.07);
+                        gain.gain.setValueAtTime(0.3, now + i * 0.07);
+                        gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.07 + 0.1);
+                        osc.start(now + i * 0.07);
+                        osc.stop(now + i * 0.07 + 0.1);
+                    });
+                    break;
+                }
+                case 'explode': {
+                    const noiseSource = audioContext.createBufferSource();
+                    const bufferSize = audioContext.sampleRate * 0.5;
+                    const buffer = audioContext.createBuffer(1, bufferSize, audioContext.sampleRate);
+                    const output = buffer.getChannelData(0);
+                    for (let i = 0; i < bufferSize; i++) output[i] = Math.random() * 2 - 1;
+                    noiseSource.buffer = buffer;
+                    const gain = audioContext.createGain();
+                    const filter = audioContext.createBiquadFilter();
+                    filter.type = 'lowpass';
+                    filter.frequency.value = 400;
+                    noiseSource.connect(filter);
+                    filter.connect(gain);
+                    gain.connect(mainGainNode);
+                    gain.gain.setValueAtTime(0.6, now);
+                    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
+                    noiseSource.start(now);
+                    noiseSource.stop(now + 0.5);
+                    break;
+                }
+                case 'gameover': {
+                     [220, 164.81, 110].forEach((freq, i) => {
+                        const osc = audioContext.createOscillator();
+                        const gain = audioContext.createGain();
+                        osc.connect(gain);
+                        gain.connect(mainGainNode);
+                        osc.type = 'square';
+                        osc.frequency.setValueAtTime(freq, now + i * 0.2);
+                        gain.gain.setValueAtTime(0.4, now + i * 0.2);
+                        gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.2 + 0.3);
+                        osc.start(now + i * 0.2);
+                        osc.stop(now + i * 0.2 + 0.3);
+                    });
+                    break;
+                }
+            }
+        }
+        
+        // --- INITIALIZATION ---
         function init() {
             scene = new THREE.Scene();
             scene.fog = new THREE.Fog(0x000000, 20, 60);
 
             camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-            camera.position.set(0, 15, 18); // Static angled camera
+            camera.position.set(0, 15, 18);
             camera.lookAt(0, 0, 0);
 
             renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -249,8 +338,9 @@
             scene.add(rimLight2);
         }
 
+        // --- GAME OBJECT CREATION ---
         function createGameBoard() {
-            const gridGeometry = new THREE.PlaneGeometry(gridSize, gridSize, gridSize, gridSize);
+            const gridGeometry = new THREE.PlaneGeometry(gridSize, gridSize);
             const gridMaterial = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.8, roughness: 0.2, emissive: gridColor, emissiveIntensity: 0.1 });
             const grid = new THREE.Mesh(gridGeometry, gridMaterial);
             grid.rotation.x = -Math.PI / 2;
@@ -258,104 +348,58 @@
             grid.receiveShadow = true;
             scene.add(grid);
 
-             // Add grid lines
             const lineMaterial = new THREE.LineBasicMaterial({ color: 0x00ffff, opacity: 0.3, transparent: true });
             for (let i = 0; i <= gridSize; i++) {
                 const hPoints = [new THREE.Vector3(-gridSize/2, 0, -gridSize/2 + i), new THREE.Vector3(gridSize/2, 0, -gridSize/2 + i)];
-                const hGeometry = new THREE.BufferGeometry().setFromPoints(hPoints);
-                scene.add(new THREE.Line(hGeometry, lineMaterial));
-
+                scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(hPoints), lineMaterial));
                 const vPoints = [new THREE.Vector3(-gridSize/2 + i, 0, -gridSize/2), new THREE.Vector3(-gridSize/2 + i, 0, gridSize/2)];
-                const vGeometry = new THREE.BufferGeometry().setFromPoints(vPoints);
-                scene.add(new THREE.Line(vGeometry, lineMaterial));
+                scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(vPoints), lineMaterial));
             }
 
-            // Add walls
-            const wallMaterial = new THREE.MeshStandardMaterial({
-                color: 0x00ffff,
-                emissive: 0x00ffff,
-                emissiveIntensity: 0.5,
-                transparent: true,
-                opacity: 0.2
-            });
-            const wallHeight = 3;
-            const wallThickness = 0.1;
-
+            const wallMaterial = new THREE.MeshStandardMaterial({ color: 0x00ffff, emissive: 0x00ffff, emissiveIntensity: 0.5, transparent: true, opacity: 0.2 });
+            const wallHeight = 3, wallThickness = 0.1;
             const northWall = new THREE.Mesh(new THREE.BoxGeometry(gridSize + 2, wallHeight, wallThickness), wallMaterial);
             northWall.position.set(0, wallHeight/2 - 0.5, gridSize/2 + 0.5);
             scene.add(northWall);
-
             const southWall = new THREE.Mesh(new THREE.BoxGeometry(gridSize + 2, wallHeight, wallThickness), wallMaterial);
             southWall.position.set(0, wallHeight/2 - 0.5, -gridSize/2 - 0.5);
             scene.add(southWall);
-
             const eastWall = new THREE.Mesh(new THREE.BoxGeometry(wallThickness, wallHeight, gridSize + 2), wallMaterial);
             eastWall.position.set(gridSize/2 + 0.5, wallHeight/2 - 0.5, 0);
             scene.add(eastWall);
-            
             const westWall = new THREE.Mesh(new THREE.BoxGeometry(wallThickness, wallHeight, gridSize + 2), wallMaterial);
             westWall.position.set(-gridSize/2 - 0.5, wallHeight/2 - 0.5, 0);
             scene.add(westWall);
         }
 
         function createStarfield() {
-            const starVertices = [];
-            const starColors = [];
+            const starVertices = [], starColors = [];
             const zMin = -200, zMax = 20;
-
             for (let i = 0; i < 1500; i++) {
-                const x = THREE.MathUtils.randFloatSpread(150);
-                const y = THREE.MathUtils.randFloatSpread(150);
-                const z = THREE.MathUtils.randFloat(zMin, zMax);
-                starVertices.push(x, y, z);
-
-                const intensity = (z - zMin) / (zMax - zMin);
+                starVertices.push(THREE.MathUtils.randFloatSpread(150), THREE.MathUtils.randFloatSpread(150), THREE.MathUtils.randFloat(zMin, zMax));
+                const intensity = (starVertices[starVertices.length - 1] - zMin) / (zMax - zMin);
                 starColors.push(intensity, intensity, intensity);
             }
-
             const starGeometry = new THREE.BufferGeometry();
             starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
             starGeometry.setAttribute('color', new THREE.Float32BufferAttribute(starColors, 3));
-            
-            const starMaterial = new THREE.PointsMaterial({
-                size: 0.15,
-                vertexColors: true,
-                fog: false
-            });
+            const starMaterial = new THREE.PointsMaterial({ size: 0.15, vertexColors: true, fog: false });
             starfield = new THREE.Points(starGeometry, starMaterial);
             scene.add(starfield);
         }
 
         function createSnake() {
-            // Clear previous snake from the scene and array
             snake.forEach(segment => scene.remove(segment.mesh));
             snake = [];
-
-            const initialSegments = [
-                { pos: { x: 0, y: 0, z: 0 }, isHead: true },
-                { pos: { x: -1, y: 0, z: 0 }, isHead: false },
-                { pos: { x: -2, y: 0, z: 0 }, isHead: false },
-            ];
-
-            initialSegments.forEach(data => {
+            [{ pos: { x: 0, y: 0, z: 0 }, isHead: true }, { pos: { x: -1, y: 0, z: 0 }, isHead: false }, { pos: { x: -2, y: 0, z: 0 }, isHead: false }].forEach(data => {
                 const isHead = data.isHead;
                 const geometry = new THREE.BoxGeometry(0.9, 0.9, 0.9);
-                const material = new THREE.MeshStandardMaterial({
-                    color: isHead ? snakeHeadColor : snakeBodyColor,
-                    emissive: isHead ? snakeHeadColor : snakeBodyColor,
-                    emissiveIntensity: isHead ? 0.5 : 0.3,
-                    metalness: isHead ? 0.8 : 0.6,
-                    roughness: isHead ? 0.2 : 0.3
-                });
-
+                const material = new THREE.MeshStandardMaterial({ color: isHead ? snakeHeadColor : snakeBodyColor, emissive: isHead ? snakeHeadColor : snakeBodyColor, emissiveIntensity: isHead ? 0.5 : 0.3, metalness: isHead ? 0.8 : 0.6, roughness: isHead ? 0.2 : 0.3 });
                 const segment = new THREE.Mesh(geometry, material);
                 segment.castShadow = true;
-                
-                const pos = data.pos;
-                segment.position.set(pos.x - gridSize / 2 + 0.5, 0.45, pos.z - gridSize / 2 + 0.5);
-                
+                segment.position.set(data.pos.x - gridSize / 2 + 0.5, 0.45, data.pos.z - gridSize / 2 + 0.5);
                 scene.add(segment);
-                snake.push({ position: pos, mesh: segment });
+                snake.push({ position: data.pos, mesh: segment });
             });
         }
         
@@ -370,38 +414,63 @@
             snake.push({ position: { ...tail.position }, mesh: segment });
         }
 
-
         function createFood() {
-            if (food) {
-                scene.remove(food);
-                scene.remove(foodGlow);
-            }
-
+            if (food) { scene.remove(food); scene.remove(foodGlow); }
             let x, z;
             do {
                 x = Math.floor(Math.random() * gridSize);
                 z = Math.floor(Math.random() * gridSize);
-            } while (snake.some(segment => segment.position.x === x && segment.position.z === z));
-
+            } while (snake.some(s => s.position.x === x && s.position.z === z) || (bonusFood && bonusFood.gridPosition.x === x && bonusFood.gridPosition.z === z));
             const foodGeometry = new THREE.OctahedronGeometry(0.4, 0);
             const foodMaterial = new THREE.MeshStandardMaterial({ color: foodColor, emissive: foodColor, emissiveIntensity: 0.8, metalness: 1, roughness: 0 });
             food = new THREE.Mesh(foodGeometry, foodMaterial);
             food.position.set(x - gridSize/2 + 0.5, 0.5, z - gridSize/2 + 0.5);
             food.castShadow = true;
             scene.add(food);
-
             const glowGeometry = new THREE.SphereGeometry(0.8, 16, 16);
             const glowMaterial = new THREE.MeshBasicMaterial({ color: foodColor, transparent: true, opacity: 0.3 });
             foodGlow = new THREE.Mesh(glowGeometry, glowMaterial);
             foodGlow.position.copy(food.position);
             scene.add(foodGlow);
-
             food.gridPosition = { x, z };
         }
 
+        function createBonusFood() {
+            if (bonusFood) return;
+            let x, z;
+            do {
+                x = Math.floor(Math.random() * gridSize);
+                z = Math.floor(Math.random() * gridSize);
+            } while (snake.some(s => s.position.x === x && s.position.z === z) || (food && food.gridPosition.x === x && food.gridPosition.z === z));
+            const geometry = new THREE.TorusGeometry(0.3, 0.1, 8, 16);
+            const material = new THREE.MeshStandardMaterial({ color: bonusFoodColor, emissive: bonusFoodColor, emissiveIntensity: 1, metalness: 1, roughness: 0 });
+            bonusFood = new THREE.Mesh(geometry, material);
+            bonusFood.position.set(x - gridSize/2 + 0.5, 0.5, z - gridSize/2 + 0.5);
+            bonusFood.rotation.x = Math.PI / 2;
+            bonusFood.castShadow = true;
+            scene.add(bonusFood);
+            const glowGeometry = new THREE.SphereGeometry(0.7, 16, 16);
+            const glowMaterial = new THREE.MeshBasicMaterial({ color: bonusFoodColor, transparent: true, opacity: 0.4 });
+            bonusFoodGlow = new THREE.Mesh(glowGeometry, glowMaterial);
+            bonusFoodGlow.position.copy(bonusFood.position);
+            scene.add(bonusFoodGlow);
+            bonusFood.gridPosition = { x, z };
+            bonusFoodTimeout = setTimeout(removeBonusFood, bonusFoodDuration);
+        }
+
+        function removeBonusFood() {
+            if (bonusFood) {
+                scene.remove(bonusFood);
+                scene.remove(bonusFoodGlow);
+                bonusFood = null;
+                bonusFoodGlow = null;
+                clearTimeout(bonusFoodTimeout);
+            }
+        }
+        
+        // --- GAME LOGIC ---
         function moveSnake() {
             if (!gameRunning || isPaused) return;
-
             direction = { ...newDirection };
             const head = snake[0];
             const newX = head.position.x + direction.x;
@@ -415,7 +484,6 @@
             const tail = snake.pop();
             tail.position = { x: newX, y: 0, z: newZ };
             snake.unshift(tail);
-
             for(let i=0; i < snake.length; i++) {
                 snake[i].mesh.position.set(snake[i].position.x - gridSize/2 + 0.5, 0.45, snake[i].position.z - gridSize/2 + 0.5);
             }
@@ -425,93 +493,146 @@
             else if (direction.z === 1) snake[0].mesh.rotation.y = Math.PI;
             else if (direction.z === -1) snake[0].mesh.rotation.y = 0;
 
+            if (bonusFood && newX === bonusFood.gridPosition.x && newZ === bonusFood.gridPosition.z) {
+                eatBonusFood();
+            }
             if (newX === food.gridPosition.x && newZ === food.gridPosition.z) {
                 eatFood();
             }
         }
         
+        function eatFood() {
+            playSound('eat');
+            score += 10;
+            document.getElementById('score').textContent = score;
+            if (score > highScore) {
+                highScore = score;
+                localStorage.setItem('snake3DHighScore', highScore);
+                document.getElementById('highScore').textContent = highScore;
+            }
+            level = Math.floor(score / 50) + 1;
+            document.getElementById('level').textContent = level;
+            gameSpeed = Math.max(50, 150 - level * 10);
+            
+            if (!bonusFood && Math.random() < 0.25) createBonusFood();
+
+            createFoodParticles(food.position, foodColor);
+            addSnakeSegment();
+            createFood();
+        }
+
+        function eatBonusFood() {
+            playSound('bonus_eat');
+            score += bonusFoodValue;
+            document.getElementById('score').textContent = score;
+            if (score > highScore) {
+                highScore = score;
+                localStorage.setItem('snake3DHighScore', highScore);
+                document.getElementById('highScore').textContent = highScore;
+            }
+            level = Math.floor(score / 50) + 1;
+            document.getElementById('level').textContent = level;
+            gameSpeed = Math.max(50, 150 - level * 10);
+            createFoodParticles(bonusFood.position, bonusFoodColor);
+            removeBonusFood();
+        }
+
         function handleDeath() {
+            playSound('explode');
             lives--;
             document.getElementById('lives').textContent = lives;
             isPaused = true; 
-
             createExplosion(snake[0].mesh.position);
             snake.forEach(segment => segment.mesh.visible = false);
-
             if (lives <= 0) {
-                setTimeout(() => {
-                    isPaused = false;
-                    gameOver();
-                }, 2000); 
+                setTimeout(() => { isPaused = false; gameOver(); }, 2000); 
             } else {
-                setTimeout(() => {
-                    resetAfterDeath();
-                }, 2000);
+                setTimeout(resetAfterDeath, 2000);
             }
         }
 
         function resetAfterDeath() {
+            removeBonusFood();
             direction = { x: 1, y: 0, z: 0 };
             newDirection = { x: 1, y: 0, z: 0 };
             createSnake();
             isPaused = false;
         }
 
+        function handleKeyPress(event) {
+            if (!gameRunning || (isPaused && event.key.toLowerCase() !== ' ')) return;
+            switch(event.key.toLowerCase()) {
+                case 'arrowleft': case 'a':
+                    if (!isPaused) newDirection = { x: direction.z, y: 0, z: -direction.x };
+                    break;
+                case 'arrowright': case 'd':
+                    if (!isPaused) newDirection = { x: -direction.z, y: 0, z: direction.x };
+                    break;
+                case ' ':
+                    isPaused = !isPaused;
+                    document.getElementById('pauseIndicator').style.display = isPaused ? 'block' : 'none';
+                    break;
+            }
+        }
+
+        function startGame() {
+            initAudio();
+            document.getElementById('startMenu').style.display = 'none';
+            gameRunning = true;
+            isPaused = false;
+            lives = 3;
+            document.getElementById('lives').textContent = lives;
+        }
+
+        function gameOver() {
+            playSound('gameover');
+            gameRunning = false;
+            document.getElementById('finalScore').textContent = score;
+            document.getElementById('gameOverMenu').style.display = 'block';
+        }
+
+        function restartGame() {
+            document.getElementById('gameOverMenu').style.display = 'none';
+            direction = { x: 1, y: 0, z: 0 };
+            newDirection = { x: 1, y: 0, z: 0 };
+            score = 0; level = 1; lives = 3; gameSpeed = 150;
+            removeBonusFood();
+            createSnake();
+            createFood();
+            document.getElementById('score').textContent = score;
+            document.getElementById('level').textContent = level;
+            document.getElementById('lives').textContent = lives;
+            gameRunning = true;
+            isPaused = false;
+        }
+
+        // --- PARTICLE EFFECTS ---
         function createExplosion(position) {
             const particleCount = 100;
             const geometry = new THREE.BufferGeometry();
-            const positions = [];
-            const velocities = [];
+            const positions = [], velocities = [];
             for (let i = 0; i < particleCount; i++) {
                 positions.push(position.x, position.y, position.z);
-                velocities.push(
-                    (Math.random() - 0.5) * 15,
-                    (Math.random() - 0.5) * 15,
-                    (Math.random() - 0.5) * 15
-                );
+                velocities.push((Math.random() - 0.5) * 15, (Math.random() - 0.5) * 15, (Math.random() - 0.5) * 15);
             }
             geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-            const material = new THREE.PointsMaterial({
-                size: 0.15,
-                color: snakeHeadColor,
-                transparent: true
-            });
+            const material = new THREE.PointsMaterial({ size: 0.15, color: snakeHeadColor, transparent: true });
             const particles = new THREE.Points(geometry, material);
             particles.userData = { velocities, life: 1.0 };
             scene.add(particles);
             particleSystems.push(particles);
         }
 
-        function eatFood() {
-            score += 10;
-            document.getElementById('score').textContent = score;
-
-            if (score > highScore) {
-                highScore = score;
-                localStorage.setItem('snake3DHighScore', highScore);
-                document.getElementById('highScore').textContent = highScore;
-            }
-
-            level = Math.floor(score / 50) + 1;
-            document.getElementById('level').textContent = level;
-            gameSpeed = Math.max(50, 150 - level * 10);
-            
-            createFoodParticles(food.position);
-            addSnakeSegment();
-            createFood();
-        }
-
-        function createFoodParticles(position) {
+        function createFoodParticles(position, color) {
             const particleCount = 20;
             const geometry = new THREE.BufferGeometry();
-            const positions = [];
-            const velocities = [];
+            const positions = [], velocities = [];
             for (let i = 0; i < particleCount; i++) {
                 positions.push(position.x, position.y, position.z);
                 velocities.push((Math.random() - 0.5) * 5, Math.random() * 5, (Math.random() - 0.5) * 5);
             }
             geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-            const material = new THREE.PointsMaterial({ size: 0.1, color: foodColor, transparent: true });
+            const material = new THREE.PointsMaterial({ size: 0.1, color: color, transparent: true });
             const particles = new THREE.Points(geometry, material);
             particles.userData = { velocities, life: 1.0 };
             scene.add(particles);
@@ -537,68 +658,7 @@
             });
         }
 
-        function handleKeyPress(event) {
-            if (!gameRunning && event.key !== ' ' && event.key !== 'Enter') return;
-            if (isPaused && event.key.toLowerCase() !== ' ') return;
-            if (!gameRunning || isPaused) {
-                 if (event.key.toLowerCase() === ' ') {
-                    if (gameRunning) {
-                        isPaused = !isPaused;
-                        document.getElementById('pauseIndicator').style.display = isPaused ? 'block' : 'none';
-                    }
-                 }
-                 return;
-            }
-
-            switch(event.key.toLowerCase()) {
-                case 'arrowleft': case 'a':
-                    // Turn left relative to current direction
-                    newDirection = { x: direction.z, y: 0, z: -direction.x };
-                    break;
-                case 'arrowright': case 'd':
-                    // Turn right relative to current direction
-                    newDirection = { x: -direction.z, y: 0, z: direction.x };
-                    break;
-                case ' ':
-                    if (gameRunning) {
-                        isPaused = !isPaused;
-                        document.getElementById('pauseIndicator').style.display = isPaused ? 'block' : 'none';
-                    }
-                    break;
-            }
-        }
-
-        function startGame() {
-            document.getElementById('startMenu').style.display = 'none';
-            gameRunning = true;
-            isPaused = false;
-            lives = 3;
-            document.getElementById('lives').textContent = lives;
-        }
-
-        function gameOver() {
-            gameRunning = false;
-            document.getElementById('finalScore').textContent = score;
-            document.getElementById('gameOverMenu').style.display = 'block';
-        }
-
-        function restartGame() {
-            document.getElementById('gameOverMenu').style.display = 'none';
-            direction = { x: 1, y: 0, z: 0 };
-            newDirection = { x: 1, y: 0, z: 0 };
-            score = 0;
-            level = 1;
-            lives = 3;
-            gameSpeed = 150;
-            createSnake();
-            createFood();
-            document.getElementById('score').textContent = score;
-            document.getElementById('level').textContent = level;
-            document.getElementById('lives').textContent = lives;
-            gameRunning = true;
-            isPaused = false;
-        }
-
+        // --- RENDER LOOP ---
         function onWindowResize() {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
@@ -608,34 +668,23 @@
         
         function animateStarfield(deltaTime) {
             if (!starfield) return;
-
             const positions = starfield.geometry.attributes.position.array;
             const colors = starfield.geometry.attributes.color.array;
-            const speed = 15; // units per second
+            const speed = 15;
             const zMin = -200, zMax = 20;
-
             for (let i = 0; i < positions.length; i += 3) {
-                // Move star on Z axis towards the camera
                 positions[i + 2] += speed * deltaTime;
-
-                // If star has moved past the camera, reset its position to the back
                 if (positions[i + 2] > zMax) {
-                    positions[i + 2] = zMin; // Reset Z to the back
-                    // Give it a new random X and Y to prevent streaking
+                    positions[i + 2] = zMin;
                     positions[i] = THREE.MathUtils.randFloatSpread(150);
                     positions[i + 1] = THREE.MathUtils.randFloatSpread(150);
                 }
-                
-                // Update color based on new Z position for depth effect
                 const intensity = (positions[i + 2] - zMin) / (zMax - zMin);
-                colors[i] = intensity;
-                colors[i + 1] = intensity;
-                colors[i + 2] = intensity;
+                colors[i] = colors[i + 1] = colors[i + 2] = intensity;
             }
             starfield.geometry.attributes.position.needsUpdate = true;
             starfield.geometry.attributes.color.needsUpdate = true;
         }
-
 
         let lastFrameTime = 0;
         function animate(currentTime) {
@@ -655,6 +704,11 @@
                 foodGlow.position.copy(food.position);
                 const scale = 1 + Math.sin(currentTime * 0.005) * 0.2;
                 foodGlow.scale.set(scale, scale, scale);
+            }
+            if (bonusFood) {
+                bonusFood.rotation.z += 0.05;
+                bonusFood.position.y = 0.5 + Math.sin(currentTime * 0.004) * 0.15;
+                bonusFoodGlow.position.copy(bonusFood.position);
             }
             
             animateStarfield(deltaTime);
