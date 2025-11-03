@@ -128,7 +128,7 @@
                 <div class="m-2 text-cyan-400 text-sm tracking-wider">←→ or A/D - Steer Left/Right</div>
                 <div class="m-2 text-cyan-400 text-sm tracking-wider">SPACE - Pause</div>
                 <div class="m-2 text-cyan-400 text-sm tracking-wider">C - Change Camera</div>
-                <div class="m-2 text-cyan-400 text-sm tracking-wider">Mouse - Rotate View (Free Camera)</div>
+                <div class="m-2 text-cyan-400 text-sm tracking-wider">Mouse - Pan &amp; Zoom (Free Camera)</div>
             </div>
         </div>
 
@@ -213,6 +213,10 @@
             controls.enableDamping = true;
             controls.dampingFactor = 0.05;
             controls.enabled = false;
+            // Prevent rotation and set left mouse to pan in free camera mode
+            controls.enableRotate = false;
+            controls.mouseButtons.LEFT = THREE.MOUSE.PAN;
+            controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE; // Assign to a button, but rotation is disabled
 
             document.addEventListener('keydown', handleKeyPress);
             window.addEventListener('resize', onWindowResize);
