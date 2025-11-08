@@ -95,6 +95,10 @@
     </div>
 
     <div id="gameUI" class="fixed top-0 left-0 w-full h-full z-10 pointer-events-none">
+        <div id="pauseBtn" class="md:hidden absolute top-5 right-5 pointer-events-auto bg-black/70 border-2 border-yellow-300 rounded-xl p-3">
+            <svg class="w-6 h-6 text-yellow-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6"></path></svg>
+        </div>
+
         <div class="absolute top-5 left-1/2 -translate-x-1/2 flex flex-col md:flex-row items-center gap-4 md:gap-8 pointer-events-auto">
             <div class="bg-black/70 border-2 border-cyan-400 rounded-xl py-2 px-6 md:py-4 md:px-8 backdrop-blur-lg shadow-[0_0_20px_rgba(0,255,255,0.5)] text-center">
                 <div class="text-xs text-cyan-400 tracking-[2px] mb-1">SCORE</div>
@@ -156,6 +160,11 @@
             </div>
         </div>
 
+        <div id="touchControls" class="md:hidden fixed bottom-0 left-0 w-full h-1/4 pointer-events-auto flex">
+            <div id="touchLeft" class="w-1/2 h-full bg-cyan-400/10"></div>
+            <div class="w-px h-full bg-cyan-400/20"></div>
+            <div id="touchRight" class="w-1/2 h-full bg-pink-500/10"></div>
+        </div>
     </div>
 
     <div id="gameCanvas" class="fixed top-0 left-0 w-full h-full z-0"></div>
@@ -299,6 +308,11 @@
 
             document.addEventListener('keydown', handleKeyPress);
             window.addEventListener('resize', onWindowResize);
+
+            document.getElementById('touchLeft').addEventListener('touchstart', (e) => handleTouch(e, 'left'));
+            document.getElementById('touchRight').addEventListener('touchstart', (e) => handleTouch(e, 'right'));
+            document.getElementById('pauseBtn').addEventListener('touchstart', (e) => handleTouch(e, 'pause'));
+
             document.getElementById('highScore').textContent = highScore;
             document.getElementById('lives').textContent = lives;
 
@@ -569,6 +583,24 @@
                     if (!isPaused) newDirection = { x: -direction.z, y: 0, z: direction.x };
                     break;
                 case ' ':
+                    isPaused = !isPaused;
+                    document.getElementById('pauseIndicator').style.display = isPaused ? 'block' : 'none';
+                    break;
+            }
+        }
+
+        function handleTouch(event, action) {
+            event.preventDefault();
+            if (!gameRunning) return;
+
+            switch(action) {
+                case 'left':
+                    if (!isPaused) newDirection = { x: direction.z, y: 0, z: -direction.x };
+                    break;
+                case 'right':
+                    if (!isPaused) newDirection = { x: -direction.z, y: 0, z: direction.x };
+                    break;
+                case 'pause':
                     isPaused = !isPaused;
                     document.getElementById('pauseIndicator').style.display = isPaused ? 'block' : 'none';
                     break;
